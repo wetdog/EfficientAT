@@ -9,7 +9,10 @@ import urllib.parse
 from models.mn.utils import cnn_out_size
 from models.mn.block_types import InvertedResidualConfig, InvertedResidual
 from models.mn.attention_pooling import MultiHeadAttentionPooling
-from helpers.utils import NAME_TO_WIDTH
+#from helpers.utils import NAME_TO_WIDTH
+
+import os
+from torch import load
 
 
 # Adapted version of MobileNetV3 pytorch implementation
@@ -279,37 +282,40 @@ def _mobilenet_v3(
 ):
     model = MN(inverted_residual_setting, last_channel, **kwargs)
 
-    if pretrained_name in pretrained_models:
+    if os.path.exists(pretrained_name):
+        state_dict= load(pretrained_name, map_location="cpu")
+
+    elif pretrained_name in pretrained_models:
         model_url = pretrained_models.get(pretrained_name)
         state_dict = load_state_dict_from_url(model_url, model_dir=model_dir, map_location="cpu")
+        
+    if kwargs['head_type'] == "mlp":
+        num_classes = state_dict['classifier.5.bias'].size(0)
+    elif kwargs['head_type'] == "fully_convolutional":
+        num_classes = state_dict['classifier.1.bias'].size(0)
+    else:
+        print("Loading weights for classifier only implemented for head types 'mlp' and 'fully_convolutional'")
+        num_classes = -1
+    if kwargs['num_classes'] != num_classes:
+        # if the number of logits is not matching the state dict,
+        # drop the corresponding pre-trained part
+        pretrain_logits = state_dict['classifier.5.bias'].size(0) if kwargs['head_type'] == "mlp" \
+            else state_dict['classifier.1.bias'].size(0)
+        print(f"Number of classes defined: {kwargs['num_classes']}, "
+                f"but try to load pre-trained layer with logits: {pretrain_logits}\n"
+                "Dropping last layer.")
         if kwargs['head_type'] == "mlp":
-            num_classes = state_dict['classifier.5.bias'].size(0)
-        elif kwargs['head_type'] == "fully_convolutional":
-            num_classes = state_dict['classifier.1.bias'].size(0)
+            del state_dict['classifier.5.weight']
+            del state_dict['classifier.5.bias']
         else:
-            print("Loading weights for classifier only implemented for head types 'mlp' and 'fully_convolutional'")
-            num_classes = -1
-        if kwargs['num_classes'] != num_classes:
-            # if the number of logits is not matching the state dict,
-            # drop the corresponding pre-trained part
-            pretrain_logits = state_dict['classifier.5.bias'].size(0) if kwargs['head_type'] == "mlp" \
-                else state_dict['classifier.1.bias'].size(0)
-            print(f"Number of classes defined: {kwargs['num_classes']}, "
-                  f"but try to load pre-trained layer with logits: {pretrain_logits}\n"
-                  "Dropping last layer.")
-            if kwargs['head_type'] == "mlp":
-                del state_dict['classifier.5.weight']
-                del state_dict['classifier.5.bias']
-            else:
-                state_dict = {k: v for k, v in state_dict.items() if not k.startswith('classifier')}
-        try:
-            model.load_state_dict(state_dict)
-        except RuntimeError as e:
-            print(str(e))
-            print("Loading weights pre-trained weights in a non-strict manner.")
-            model.load_state_dict(state_dict, strict=False)
-    elif pretrained_name:
-        raise NotImplementedError(f"Model name '{pretrained_name}' unknown.")
+            state_dict = {k: v for k, v in state_dict.items() if not k.startswith('classifier')}
+    try:
+        model.load_state_dict(state_dict)
+    except RuntimeError as e:
+        print(str(e))
+        print("Loading weights pre-trained weights in a non-strict manner.")
+        model.load_state_dict(state_dict, strict=False)
+
     return model
 
 
